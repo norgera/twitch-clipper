@@ -45,13 +45,13 @@ In your terminal:
 ```bash
 export TWITCH_CLIENT_ID=YOUR_CLIENT_ID
 export TWITCH_CLIENT_SECRET=YOUR_CLIENT_SECRET
-export REDIRECT_URL=YOUR_REDIRECT_URL
+export REDIRECT_URI=YOUR_REDIRECT_URL
 ```
 
 ```bash
 AUTH_URL="https://id.twitch.tv/oauth2/authorize?\
 client_id=${TWITCH_CLIENT_ID}&\
-redirect_url=${REDIRECT_URL}&\
+redirect_uri=${REDIRECT_URL}&\
 response_type=code&\
 scope=clips:edit+chat:read+chat:edit"
 echo "Open this in your browser and accept:"
@@ -68,7 +68,7 @@ curl -X POST https://id.twitch.tv/oauth2/token \
   -d client_secret=${TWITCH_CLIENT_SECRET} \
   -d code=PASTE_THIS_CODE \
   -d grant_type=authorization_code \
-  -d redirect_url=${REDIRECT_URL}
+  -d redirect_uri=${REDIRECT_URI}
 ```
 
 You’ll get back JSON:

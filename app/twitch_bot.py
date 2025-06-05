@@ -286,7 +286,7 @@ class ClipperBot(commands.Bot):
             self.logger.info("Started metrics display update thread")
         
     async def event_message(self, message):
-        """Handle incoming chat messages."""
+        """Handle incoming chat messages (optimized)."""
         # Don't process messages from the bot itself
         if message.echo:
             return
@@ -305,14 +305,6 @@ class ClipperBot(commands.Bot):
                     user_id=message.author.name,
                     timestamp=datetime.now()
                 )
-                
-                # Get current stats and debug
-                stats = self.analyzers[channel].get_window_stats()
-                self.logger.debug(f"Stats for {channel}: {stats}")
-                
-                # Update metrics display if available
-                if hasattr(self, 'metrics_display') and self.metrics_display and self.metrics_display.ready.is_set():
-                    self.metrics_display.update_metrics(channel, stats)
                     
                 # Periodically update emotes (every 5 minutes)
                 current_time = time.time()
@@ -328,37 +320,31 @@ class ClipperBot(commands.Bot):
                     except Exception as e:
                         self.logger.error(f"Failed to update emotes: {e}")
                     
-                # Get latest stats including ML-based predictions
+                # Get stats once for all operations
                 stats = self.analyzers[channel].get_window_stats()
                 
                 # Check if the moment is clip-worthy using our hybrid scoring system
                 clip_worthy_score = stats.get('clip_worthy_score', 0)
-                burst_score = stats.get('burst_score', 0)
-                velocity = stats.get('norm_velocity', 0)
-                ml_score = stats.get('ml_score', 0)
                 
                 # Clip is worthy if hybrid score is high enough
                 if clip_worthy_score >= 0.85:  # Higher threshold for better quality clips
-                    # Determine what triggered the clip
+                    burst_score = stats.get('burst_score', 0)
                     velocity_relative = stats.get('velocity_relative', 0)
                     burst_relative = stats.get('burst_relative', 0)
-                    
-                    # Get dynamic thresholds from stats
-                    velocity_threshold = stats.get('velocity_threshold', 2.5)
-                    burst_threshold = stats.get('burst_threshold', 20.0)
+                    ml_score = stats.get('ml_score', 0)
                     
                     # Determine trigger type based on what exceeded threshold more
                     if velocity_relative > burst_relative:
                         trigger_type = "high_velocity"
-                        trigger_reason = f"velocity={velocity:.2f} (relative={velocity_relative:.2f})"
+                        trigger_reason = f"velocity_rel={velocity_relative:.2f}"
                     else:
-                        trigger_type = "emote_burst"
-                        trigger_reason = f"burst={burst_score:.1f} (relative={burst_relative:.2f})"
+                        trigger_type = "emote_burst" 
+                        trigger_reason = f"burst={burst_score:.1f}"
                     
                     # Log the clip reason with scores
                     self.logger.info(
                         f"Clip triggered by {trigger_type}: {trigger_reason} | "
-                        f"Hybrid Score: {clip_worthy_score:.3f} | ML: {ml_score:.3f} | "
+                        f"Hybrid: {clip_worthy_score:.3f} | ML: {ml_score:.3f} | "
                         f"Viewers: {stats.get('viewer_count', 0):,}"
                     )
                     
