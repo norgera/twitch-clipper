@@ -51,7 +51,7 @@ export REDIRECT_URI=YOUR_REDIRECT_URL
 ```bash
 AUTH_URL="https://id.twitch.tv/oauth2/authorize?\
 client_id=${TWITCH_CLIENT_ID}&\
-redirect_uri=${REDIRECT_URL}&\
+redirect_uri=${REDIRECT_URI}&\
 response_type=code&\
 scope=clips:edit+chat:read+chat:edit"
 echo "Open this in your browser and accept:"

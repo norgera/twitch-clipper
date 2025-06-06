@@ -248,7 +248,7 @@ class ClipManager:
             if not data.get('data'):
                 self.logger.error(
                     f"No user data found for channel: {channel_name}")
-            return None
+                return None
             
             broadcaster_id = data['data'][0]['id']
             self.logger.info(
@@ -269,7 +269,7 @@ class ClipManager:
             if not self.client_id or not self.client_secret:
                 self.logger.error(
                     "Missing client ID or client secret for token refresh")
-            return False
+                return False
             
             # Get refresh token from env - required for user OAuth tokens
             refresh_token = os.getenv('TWITCH_REFRESH_TOKEN', '')

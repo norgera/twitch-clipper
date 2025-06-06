@@ -113,6 +113,9 @@ class ClipperBot(commands.Bot):
         
         self.logger.info(f"Bot initialized, monitoring channels: {', '.join(channels)}")
         
+        # Register with API service if available
+        self._register_with_api()
+        
     async def close(self):
         """Cleanup resources"""
         logger.info("Cleaning up bot resources...")
@@ -246,10 +249,32 @@ class ClipperBot(commands.Bot):
             await asyncio.sleep(15)
             
     async def event_ready(self):
-        """Called once when the bot goes online."""
-        self.logger.info(f"Bot is ready! Username: {self.nick}")
+        """Called when the bot has logged in and is ready."""
+        self.logger.info(f'Bot is ready! User: {self.nick}')
         
-        # Initialize emotes for each channel
+        # Initialize emotes for all channels
+        await self.initialize_emotes()
+        
+        # Start viewer count updates
+        self.viewer_update_task = asyncio.create_task(self._update_viewer_counts())
+        
+        # Start connection monitoring
+        self.reconnect_task = asyncio.create_task(self.check_connection())
+        
+        # Start delayed clip processing
+        self.clip_scheduler_task = asyncio.create_task(self._process_clip_queue())
+        
+        # Start ML model saving task
+        self.ml_saver_task = asyncio.create_task(self._save_ml_models_periodically())
+        
+        # Re-register with API now that we're ready and have data
+        await asyncio.sleep(2)  # Give a moment for initial setup
+        self._register_with_api()
+        
+        self.logger.info("Bot is fully ready and integrated!")
+        
+    async def initialize_emotes(self):
+        """Initialize emotes for all channels"""
         for channel, analyzer in self.analyzers.items():
             try:
                 # Get channel ID from username
@@ -261,105 +286,83 @@ class ClipperBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to initialize emotes for {channel}: {e}")
         
-        # Start viewer count update loop
-        if self.viewer_update_task:
-            self.viewer_update_task.cancel()
-        self.viewer_update_task = asyncio.create_task(self._update_viewer_counts())
-        
-        # Start connection checker
-        if self.reconnect_task:
-            self.reconnect_task.cancel()
-        self.reconnect_task = asyncio.create_task(self.check_connection())
-        
-        # Start clip scheduler task
-        if self.clip_scheduler_task:
-            self.clip_scheduler_task.cancel()
-        self.clip_scheduler_task = asyncio.create_task(self._process_clip_queue())
-        
-        # Start ML model saver task
-        self.ml_saver_task = asyncio.create_task(self._save_ml_models_periodically())
-        
-        # Initialize and start metrics display thread if not already running
-        if not self.metrics_thread or not self.metrics_thread.is_alive():
-            self.metrics_thread = threading.Thread(target=self.run_metrics_display, daemon=True)
-            self.metrics_thread.start()
-            self.logger.info("Started metrics display update thread")
-        
     async def event_message(self, message):
-        """Handle incoming chat messages (optimized)."""
-        # Don't process messages from the bot itself
+        """Process incoming chat messages with detailed logging"""
         if message.echo:
             return
             
+        channel = message.channel.name.lower()
+        if channel not in self.analyzers:
+            self.logger.warning(f"Received message from unmonitored channel: {channel}")
+            return
+            
+        # Update last message time for connection monitoring
+        self.last_message_time = time.time()
+        
+        analyzer = self.analyzers[channel]
+        
+        # Add message to analyzer
         try:
-            # Get channel name without # prefix
-            channel = message.channel.name.lower()
-            
-            if channel in self.analyzers:
-                # Update last message time for connection monitoring
-                self.last_message_time = time.time()
-                
-                # Add message to analyzer
-                self.analyzers[channel].add_message(
-                    message=message.content,
-                    user_id=message.author.name,
-                    timestamp=datetime.now()
-                )
-                    
-                # Periodically update emotes (every 5 minutes)
-                current_time = time.time()
-                if not hasattr(self, '_last_emote_update'):
-                    self._last_emote_update = {}
-                if channel not in self._last_emote_update or current_time - self._last_emote_update[channel] > 300:
-                    try:
-                        users = await self.fetch_users(names=[channel])
-                        if users:
-                            channel_id = users[0].id
-                            await self.analyzers[channel].update_emotes(channel_id)
-                            self._last_emote_update[channel] = current_time
-                    except Exception as e:
-                        self.logger.error(f"Failed to update emotes: {e}")
-                    
-                # Get stats once for all operations
-                stats = self.analyzers[channel].get_window_stats()
-                
-                # Check if the moment is clip-worthy using our hybrid scoring system
-                clip_worthy_score = stats.get('clip_worthy_score', 0)
-                
-                # Clip is worthy if hybrid score is high enough
-                if clip_worthy_score >= 0.85:  # Higher threshold for better quality clips
-                    burst_score = stats.get('burst_score', 0)
-                    velocity_relative = stats.get('velocity_relative', 0)
-                    burst_relative = stats.get('burst_relative', 0)
-                    ml_score = stats.get('ml_score', 0)
-                    
-                    # Determine trigger type based on what exceeded threshold more
-                    if velocity_relative > burst_relative:
-                        trigger_type = "high_velocity"
-                        trigger_reason = f"velocity_rel={velocity_relative:.2f}"
-                    else:
-                        trigger_type = "emote_burst" 
-                        trigger_reason = f"burst={burst_score:.1f}"
-                    
-                    # Log the clip reason with scores
-                    self.logger.info(
-                        f"Clip triggered by {trigger_type}: {trigger_reason} | "
-                        f"Hybrid: {clip_worthy_score:.3f} | ML: {ml_score:.3f} | "
-                        f"Viewers: {stats.get('viewer_count', 0):,}"
-                    )
-                    
-                    # Schedule clip creation with 7-second delay
-                    await self._schedule_delayed_clip(channel, trigger_type, stats.copy())
-                
-                # Update metrics display if available
-                if hasattr(self, 'metrics_display') and self.metrics_display and self.metrics_display.ready.is_set():
-                    self.metrics_display.update_metrics(channel, stats)
-            
+            analyzer.add_message(message.content, message.author.name, datetime.now())
         except Exception as e:
-            self.logger.error(f"Error processing message: {str(e)}", exc_info=True)
+            self.logger.error(f"Error adding message to analyzer: {e}")
+            return
+        
+        # Update API data periodically (every 10 messages)
+        if len(analyzer.messages) % 10 == 0:
+            self._update_api_data()
+        
+        # Get updated stats after adding message
+        try:
+            stats = analyzer.get_window_stats()
+        except Exception as e:
+            self.logger.error(f"Error getting window stats: {e}")
+            return
+        
+        # Check for clip triggers
+        try:
+            if self.should_create_clip(channel, stats):
+                await self._schedule_delayed_clip(channel, "high_velocity", stats)
+        except Exception as e:
+            self.logger.error(f"Error checking clip triggers: {e}")
             
+        # Update metrics display if available
+        if hasattr(self, 'metrics_display') and self.metrics_display and self.metrics_display.ready.is_set():
+            self.metrics_display.update_metrics(channel, stats)
+        
         # Pass message to commands system
         await self.handle_commands(message)
+
+    def should_create_clip(self, channel: str, stats: dict) -> bool:
+        """Determine if a clip should be created based on stats"""
+        clip_worthy_score = stats.get('clip_worthy_score', 0)
+        
+        # Clip is worthy if hybrid score is high enough
+        if clip_worthy_score >= 0.85:  # Higher threshold for better quality clips
+            burst_score = stats.get('burst_score', 0)
+            velocity_relative = stats.get('velocity_relative', 0)
+            burst_relative = stats.get('burst_relative', 0)
+            ml_score = stats.get('ml_score', 0)
+            
+            # Log the clip reason with scores
+            trigger_reason = f"velocity_rel={velocity_relative:.2f}" if velocity_relative > burst_relative else f"burst={burst_score:.1f}"
+            self.logger.info(
+                f"Clip triggered: {trigger_reason} | "
+                f"Hybrid: {clip_worthy_score:.3f} | ML: {ml_score:.3f} | "
+                f"Viewers: {stats.get('viewer_count', 0):,}"
+            )
+            return True
+        return False
+
+    def _update_api_data(self):
+        """Update API with latest analyzer data"""
+        try:
+            from api.bot_adapter import update_api_analyzers
+            update_api_analyzers(self.analyzers)
+        except ImportError:
+            pass  # API not available
+        except Exception as e:
+            self.logger.debug(f"Failed to update API data: {e}")
 
     async def create_clip(self, channel: str, trigger_type: str, metrics: dict):
         """Create a clip when activity is detected."""
@@ -768,6 +771,17 @@ class ClipperBot(commands.Bot):
                 await asyncio.sleep(60)  # Wait a minute before trying again
                 
         self.logger.info("ML model saver task stopped")
+
+    def _register_with_api(self):
+        """Register bot analyzers with the API service"""
+        try:
+            from api.bot_adapter import register_analyzers_with_api
+            register_analyzers_with_api(self.analyzers)
+            self.logger.info("✅ Registered bot analyzers with API service")
+        except ImportError:
+            self.logger.info("ℹ️ API service not available - running in bot-only mode")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to register with API: {e}")
 
 async def main_async():
     """Async entry point for the bot."""
